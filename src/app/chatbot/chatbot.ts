@@ -1,14 +1,7 @@
-import {
-  Component,
-  ChangeDetectorRef,
-  ViewChild,
-  ElementRef,
-  Inject,
-  PLATFORM_ID,
-  OnInit,
-} from '@angular/core';
+import { Component, ChangeDetectorRef, ViewChild, ElementRef, Inject, PLATFORM_ID, OnInit } from '@angular/core';
 import { isPlatformBrowser, CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 import { ChatService } from '../services/chat';
 
 @Component({
@@ -27,8 +20,8 @@ export class ChatbotComponent implements OnInit {
   userInput = '';
   isLoading = false;
   isSidebarOpen: boolean = true;
-  latestTabId: number = 1;
-  tabCounter: number = 1; // ID interno (nunca se muestra al usuario)
+  latestTabId: number = 0;
+  tabCounter: number = 0;
   isHistoryView: boolean = false;
 
   tabs: { id: number; title: string; isActive: boolean }[] = [];
@@ -37,45 +30,55 @@ export class ChatbotComponent implements OnInit {
     private chatService: ChatService,
     private cdr: ChangeDetectorRef,
     @Inject(PLATFORM_ID) private platformId: Object,
+    private router: Router
   ) {}
 
   ngOnInit() {
     if (isPlatformBrowser(this.platformId)) {
-      const savedTabs = sessionStorage.getItem('chatbotTabs');
-      const savedSessions = sessionStorage.getItem('chatbotSessions');
-
-      if (savedTabs && savedSessions) {
-        this.tabs = JSON.parse(savedTabs);
-        this.chatSessions = JSON.parse(savedSessions);
-        this.tabCounter = Math.max(...this.tabs.map((t) => t.id), 1);
-
-        const activeTab = this.tabs.find((t) => t.isActive);
-        this.latestTabId = activeTab ? activeTab.id : this.tabs[this.tabs.length - 1].id;
-        this.messages = this.chatSessions[this.latestTabId] || [];
-
-        const maxId = Math.max(...this.tabs.map((t) => t.id));
-        this.isHistoryView = this.latestTabId !== maxId;
+      const userIdStr = sessionStorage.getItem('currentUserId');
+      if (!userIdStr) {
+        this.router.navigate(['/']);
         return;
       }
-    }
 
-    // Inicializamos con "Chat actual"
-    this.tabs = [{ id: 1, title: 'Chat actual', isActive: true }];
-    this.chatSessions[1] = [
-      {
-        text: '¡Hola! He iniciado un canal para ti. ¿Qué inquietud tienes hoy sobre el futuro de tu profesión y la Inteligencia Artificial?',
-        isBot: true,
-      },
-    ];
-    this.messages = this.chatSessions[1];
-    this.saveSession();
+      const userId = Number(userIdStr);
+
+      // PEDIMOS EL HISTORIAL A LA BASE DE DATOS REAL
+      this.chatService.getHistory(userId).subscribe({
+        next: (res: any) => {
+          if (res.tabs && res.tabs.length > 0) {
+            this.tabs = res.tabs;
+            this.chatSessions = res.history;
+
+            const lastTab = this.tabs[this.tabs.length - 1];
+            lastTab.isActive = true;
+            this.latestTabId = lastTab.id;
+            this.tabCounter = Math.max(...this.tabs.map((t) => t.id));
+            this.messages = this.chatSessions[this.latestTabId] || [];
+          } else {
+            this.iniciarChatVacio();
+          }
+          // Forza el renderizado en pantalla para evitar que se vea vacío
+          this.cdr.detectChanges();
+          this.scrollToBottom();
+        },
+        error: (err) => {
+          console.error("Error cargando historial", err);
+          this.iniciarChatVacio();
+          this.cdr.detectChanges();
+        }
+      });
+    }
   }
 
-  saveSession() {
-    if (isPlatformBrowser(this.platformId)) {
-      sessionStorage.setItem('chatbotTabs', JSON.stringify(this.tabs));
-      sessionStorage.setItem('chatbotSessions', JSON.stringify(this.chatSessions));
-    }
+  iniciarChatVacio() {
+    this.tabCounter = Date.now();
+    this.latestTabId = this.tabCounter;
+    this.tabs = [{ id: this.tabCounter, title: 'Chat actual', isActive: true }];
+    this.chatSessions[this.tabCounter] = [
+      { text: '¡Hola! He iniciado un canal para ti. ¿Qué inquietud tienes hoy sobre el futuro de tu profesión y la Inteligencia Artificial?', isBot: true }
+    ];
+    this.messages = this.chatSessions[this.tabCounter];
   }
 
   scrollToBottom(): void {
@@ -88,9 +91,7 @@ export class ChatbotComponent implements OnInit {
               behavior: 'smooth',
             });
           }
-        } catch (err) {
-          console.error('Error en scroll:', err);
-        }
+        } catch (err) {}
       }, 100);
     }
   }
@@ -99,39 +100,34 @@ export class ChatbotComponent implements OnInit {
     if (!this.userInput.trim() || this.isHistoryView) return;
 
     const userMessage = this.userInput;
+    const userId = Number(sessionStorage.getItem('currentUserId'));
 
-    // MAGIA 1: Renombrar con las palabras del usuario solo si se llama "Chat actual"
+    // 1. Calculamos el nuevo título visual localmente antes de enviar la API
     const currentTab = this.tabs.find((t) => t.isActive);
-    if (currentTab && currentTab.title === 'Chat actual') {
+    if (currentTab && (currentTab.title === 'Chat actual' || currentTab.title === 'Consulta')) {
       let newTitle = userMessage.trim().split(' ').slice(0, 3).join(' ');
       if (newTitle.length > 20) newTitle = newTitle.substring(0, 20) + '...';
       currentTab.title = newTitle;
     }
 
-    this.messages.push({
-      sender: 'Tú',
-      text: userMessage,
-      isBot: false,
-    });
+    const chatTitle = currentTab ? currentTab.title : 'Consulta';
 
+    this.messages.push({ sender: 'Tú', text: userMessage, isBot: false });
     this.userInput = '';
     this.isLoading = true;
-    this.saveSession();
     this.scrollToBottom();
 
-    this.chatService.sendMessage(userMessage).subscribe({
+    // 2. Enviamos el chatTitle definitivo para sincronizar con SQLite
+    this.chatService.sendMessage(userMessage, this.latestTabId, userId, chatTitle).subscribe({
       next: (res: any) => {
         this.messages.push({ text: res.response, isBot: true });
         this.isLoading = false;
-        this.saveSession();
         this.cdr.detectChanges();
         this.scrollToBottom();
       },
       error: (err: any) => {
-        console.error('Error:', err);
         this.messages.push({ text: 'Lo siento, tuve un error de conexión.', isBot: true });
         this.isLoading = false;
-        this.saveSession();
         this.cdr.detectChanges();
         this.scrollToBottom();
       },
@@ -139,57 +135,21 @@ export class ChatbotComponent implements OnInit {
   }
 
   createNewChat() {
-    const currentActive = this.tabs.find((t) => t.isActive);
-
-    // MAGIA 2: Calcular el consecutivo VISUAL real (Consulta 1, Consulta 2, etc.)
-    if (currentActive && currentActive.title === 'Chat actual') {
-      let maxConsulta = 0;
-
-      // Escaneamos las pestañas que existen actualmente en la pantalla
-      this.tabs.forEach((t) => {
-        if (t.title.startsWith('Consulta ')) {
-          // Extraemos el número de la palabra "Consulta X"
-          const num = parseInt(t.title.replace('Consulta ', ''), 10);
-          if (!isNaN(num) && num > maxConsulta) {
-            maxConsulta = num;
-          }
-        }
-      });
-
-      // Lo nombramos con el número que sigue
-      currentActive.title = `Consulta ${maxConsulta + 1}`;
-    }
-
     this.tabs.forEach((tab) => (tab.isActive = false));
-
-    this.tabCounter++; // El ID interno sigue sumando normal para no dañar la memoria
+    this.tabCounter = Date.now();
     this.latestTabId = this.tabCounter;
 
-    // El nuevo chat nace como "Chat actual"
-    this.tabs.push({
-      id: this.tabCounter,
-      title: 'Chat actual',
-      isActive: true,
-    });
-
-    this.chatSessions[this.tabCounter] = [
-      {
-        text: '¡Hola! He iniciado un nuevo canal para ti. ¿Qué inquietud tienes hoy?',
-        isBot: true,
-      },
-    ];
-
+    this.tabs.push({ id: this.tabCounter, title: 'Chat actual', isActive: true });
+    this.chatSessions[this.tabCounter] = [{ text: '¡Hola! He iniciado un nuevo canal para ti. ¿Qué inquietud tienes hoy?', isBot: true }];
     this.messages = this.chatSessions[this.tabCounter];
-    this.userInput = '';
+
     this.isSidebarOpen = true;
     this.isHistoryView = false;
-
-    this.saveSession();
+    this.cdr.detectChanges();
   }
 
   deleteTab(tabId: number, event: Event) {
     event.stopPropagation();
-
     this.tabs = this.tabs.filter((tab) => tab.id !== tabId);
     delete this.chatSessions[tabId];
 
@@ -199,24 +159,24 @@ export class ChatbotComponent implements OnInit {
         this.selectTab(maxId);
       }
     } else {
-      this.tabCounter = 0;
       this.createNewChat();
     }
-    this.saveSession();
+    this.cdr.detectChanges();
   }
 
   selectTab(selectedId: number) {
-    this.tabs.forEach((tab) => {
-      tab.isActive = tab.id === selectedId;
-    });
-
+    this.tabs.forEach((tab) => { tab.isActive = tab.id === selectedId; });
     this.latestTabId = selectedId;
     this.messages = this.chatSessions[selectedId] || [];
 
     const maxId = Math.max(...this.tabs.map((t) => t.id));
     this.isHistoryView = selectedId !== maxId;
-
-    this.saveSession();
+    this.cdr.detectChanges();
     this.scrollToBottom();
+  }
+
+  logout() {
+    sessionStorage.clear();
+    this.router.navigate(['/']);
   }
 }

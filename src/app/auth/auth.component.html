@@ -1,0 +1,37 @@
+<div class="auth-wrapper">
+  <div class="auth-card">
+    <div class="auth-header">
+      <img src="../../assets/images/logo_icon.png" alt="Logo Ean" class="auth-logo">
+      <h2>OurChatbot</h2>
+      <p>{{ isLoginMode ? 'Inicia sesión para orientarte' : 'Crea tu cuenta institucional' }}</p>
+    </div>
+
+    <form (ngSubmit)="onSubmit()" class="auth-form">
+      <div class="input-group">
+        <label>Correo Electrónico Ean</label>
+        <input type="email" [(ngModel)]="email" name="email" placeholder="usuario@universidadean.edu.co" required>
+      </div>
+
+      <div class="input-group">
+        <label>Contraseña</label>
+        <input type="password" [(ngModel)]="password" name="password" placeholder="••••••••" required>
+      </div>
+
+      <div *ngIf="errorMessage" class="alert alert-error">{{ errorMessage }}</div>
+      <div *ngIf="successMessage" class="alert alert-success">{{ successMessage }}</div>
+
+      <button type="submit" class="btn-submit" [disabled]="isLoading">
+        {{ isLoading ? 'Procesando...' : (isLoginMode ? 'Ingresar' : 'Registrarme') }}
+      </button>
+    </form>
+
+    <div class="auth-toggle">
+      <p>
+        {{ isLoginMode ? '¿No tienes cuenta?' : '¿Ya tienes una cuenta?' }}
+        <a href="javascript:void(0)" (click)="toggleMode()">
+          {{ isLoginMode ? 'Regístrate aquí' : 'Inicia sesión' }}
+        </a>
+      </p>
+    </div>
+  </div>
+</div>

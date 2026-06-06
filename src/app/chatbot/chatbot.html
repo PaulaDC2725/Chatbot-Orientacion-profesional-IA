@@ -1,17 +1,4 @@
 <div class="chat">
-  <!-- <aside class="chat__sidebar" *ngIf="isSidebarOpen" [ngClass]="{'chat__sidebar--open': isSidebarOpen}">
-    <div class="chat__sidebar-header">
-      <button class="chat__btn-new" (click)="createNewChat()">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
-        </svg>
-        Nuevo chat
-      </button>
-      <button class="chat__btn-close" (click)="isSidebarOpen = false">✕</button>
-    </div>
-  </aside> -->
-
   <nav class="chat__tabs-bar" *ngIf="isSidebarOpen">
 
     <div class="chat__sidebar-top">
@@ -55,6 +42,12 @@
 
         <div class="chat__titles">
           <h1 class="chat__title">OurChatbot: Orientador Profesional IA</h1>
+        </div>
+
+        <div class="chat__status">
+          <button class="chat__btn-logout" (click)="logout()" style="background-color: transparent; border: 1px solid white; color: white; padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: background 0.3s;" onmouseover="this.style.backgroundColor='rgba(255,255,255,0.2)'" onmouseout="this.style.backgroundColor='transparent'">
+            Cerrar Sesión
+          </button>
         </div>
       </div>
     </header>
@@ -112,3 +105,4 @@
   </div>
 
 </div>
+export const reqHandler = createNodeRequestHandler(app);

@@ -1,369 +1,216 @@
 import 'dotenv/config';
 import express from 'express';
-import fetch from 'node-fetch';
+import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  AngularNodeAppEngine,
-  createNodeRequestHandler,
-  isMainModule,
-  writeResponseToNodeResponse,
-} from '@angular/ssr/node';
+import { AngularNodeAppEngine, createNodeRequestHandler, isMainModule, writeResponseToNodeResponse } from '@angular/ssr/node';
+import bcrypt from 'bcryptjs';
+import Database from 'better-sqlite3';
 import { CareerContext, findCareerByMessage, getAvailableCareers } from './career-db';
+
+const dbPath = join(process.cwd(), 'data', 'careers.db');
+const dataDir = join(import.meta.dirname, '../data');
 
 const browserDistFolder = join(import.meta.dirname, '../browser');
 const app = express();
 const angularApp = new AngularNodeAppEngine();
 app.use(express.json());
 
+// ==========================================
+// CONEXIÓN A BASE DE DATOS
+// ==========================================
+if (!existsSync(dataDir)) {
+  mkdirSync(dataDir, { recursive: true });
+}
+const db = new Database(dbPath);
+
+// ==========================================
+// ENDPOINT: REGISTRO DE USUARIO
+// ==========================================
+app.post('/api/register', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  if (!email.endsWith('@universidadean.edu.co')) return res.status(400).json({ error: 'Solo correos institucionales.' });
+
+  try {
+    const checkUser = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+    if (checkUser) return res.status(400).json({ error: 'El correo ya está registrado.' });
+
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+
+    const insert = db.prepare('INSERT INTO users (email, password_hash, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)');
+    const result = insert.run(email, passwordHash);
+
+    return res.json({ message: 'Registro exitoso', userId: result.lastInsertRowid });
+  } catch (error) {
+    console.error('ERROR EN REGISTRO:', error);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
+  }
+});
+
+// ==========================================
+// ENDPOINT: INICIO DE SESIÓN
+// ==========================================
+app.post('/api/login', async (req, res) => {
+  const { email, password } = req.body;
+  if (!email.endsWith('@universidadean.edu.co')) return res.status(400).json({ error: 'Usa tu correo institucional.' });
+
+  try {
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email) as any;
+    if (!user) return res.status(401).json({ error: 'Credenciales incorrectas o usuario no existe.' });
+
+    const match = await bcrypt.compare(password, user.password_hash);
+    if (!match) return res.status(401).json({ error: 'Credenciales incorrectas.' });
+
+    return res.json({ message: 'Login exitoso', userId: user.id, email: user.email });
+  } catch (error) {
+    console.error('Error en login:', error);
+    return res.status(500).json({ error: 'Error interno del servidor.' });
+  }
+});
+
+// ==========================================
+// ENDPOINT: OBTENER HISTORIAL DE CHATS
+// ==========================================
+app.get('/api/history/:userId', (req, res) => {
+  const { userId } = req.params;
+  try {
+    const chats = db.prepare('SELECT * FROM chats WHERE user_id = ? ORDER BY id ASC').all(userId) as any[];
+    const history: any = {};
+    const tabs: any[] = [];
+
+    chats.forEach(chat => {
+      tabs.push({ id: chat.id, title: chat.title, isActive: false });
+      const messages = db.prepare('SELECT * FROM messages WHERE chat_id = ? ORDER BY id ASC').all(chat.id) as any[];
+
+      history[chat.id] = messages.map(m => ({
+        text: m.content,
+        isBot: m.sender === 'bot'
+      }));
+    });
+
+    return res.json({ tabs, history });
+  } catch (error) {
+    console.error('Error cargando historial:', error);
+    return res.status(500).json({ error: 'Error al cargar el historial' });
+  }
+});
+
+// ==========================================
+// FUNCIONES AUXILIARES
+// ==========================================
 function normalizeText(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .trim();
+  return value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 
 function isGreeting(message: string): boolean {
   const normalizedMessage = normalizeText(message);
-
-  const greetings = [
-    'hola',
-    'holaa',
-    'buenas',
-    'buenos dias',
-    'buenas tardes',
-    'buenas noches',
-    'hey',
-    'hello',
-    'hi',
-    'que tal',
-    'como estas',
-  ];
-
-  return greetings.some((greeting) => normalizedMessage === greeting);
+  const greetings = ['hola', 'holaa', 'buenas', 'buenos dias', 'buenas tardes', 'buenas noches', 'hey', 'hello', 'hi', 'que tal', 'como estas'];
+  return greetings.some(greeting => normalizedMessage === greeting);
 }
 
 let lastCareerContext: CareerContext | null = null;
 
 function mentionsUnsupportedCareer(message: string): boolean {
   const normalizedMessage = normalizeText(message);
-
-  const unsupportedCareers = [
-    'medicina',
-    'enfermeria',
-    'arquitectura',
-    'odontologia',
-    'veterinaria',
-    'derecho',
-    'psicologia',
-    'diseno grafico',
-    'contaduria',
-    'contabilidad',
-    'comunicacion social',
-    'comunicación social',
-    'periodismo',
-    'educacion',
-    'educación',
-    'enfermería',
-    'ingeniería de petróleos',
-    'petroleos',
-    'ingenieria aeroespacial',
-    'ingeniería aeroespacial',
-    'ingenieria civil',
-    'ingeniería civil',
-    'ingenieria industrial',
-    'ingeniería industrial',
-    'ingenieria mecanica',
-    'ingeniería mecánica',
-    'ingenieria mecatronica',
-    'ingeniería mecatrónica',
-    'ingenieria ambiental',
-    'ingeniería ambiental',
-    'ingenieria electronica',
-    'ingeniería electrónica',
-    'biologia',
-    'biología',
-    'quimica',
-    'química',
-    'fisica',
-    'física',
-    'matematicas',
-    'matemáticas',
-    'mercadeo',
-    'negocios internacionales',
-    'economia',
-    'economía',
-    'finanzas',
-    'gastronomia',
-    'gastronomía',
-    'cine',
-    'musica',
-    'música',
-    'artes',
-    'publicidad',
-    'relaciones internacionales',
-    'ciencia politica',
-    'ciencia política',
-    'trabajo social',
-    'terapia ocupacional',
-    'fisioterapia',
-    'nutricion',
-    'nutrición',
-  ];
-
-  const mentionsUnsupportedName = unsupportedCareers.some((career) =>
-    normalizedMessage.includes(normalizeText(career)),
-  );
-
-  return mentionsUnsupportedName;
+  const unsupportedCareers = ['medicina', 'enfermeria', 'arquitectura', 'odontologia', 'veterinaria', 'derecho', 'psicologia', 'diseno grafico', 'contaduria', 'comunicacion social', 'periodismo', 'educacion', 'biologia', 'quimica', 'fisica', 'matematicas', 'mercadeo', 'economia', 'finanzas', 'artes', 'publicidad'];
+  return unsupportedCareers.some(career => normalizedMessage.includes(normalizeText(career)));
 }
 
+// ==========================================
+// ENDPOINT: CHATBOT (GROQ API) + GUARDADO Y ACTUALIZACIÓN DE TÍTULO
+// ==========================================
 app.post('/api/chat', async (req, res) => {
   const userMessage = req.body?.message;
+  const userId = req.body?.userId;
+  const chatId = req.body?.chatId;
+  const chatTitle = req.body?.chatTitle || 'Consulta'; // Recibe el título actualizado desde Angular
 
   if (!userMessage || typeof userMessage !== 'string') {
-    return res.status(400).json({
-      response: 'Debes escribir una pregunta para poder orientarte.',
-    });
+    return res.status(400).json({ response: 'Debes escribir una pregunta para poder orientarte.' });
+  }
+
+  // Sincronización del Chat y Título en la Base de Datos
+  if (userId && chatId) {
+    try {
+      const chatExists = db.prepare('SELECT id FROM chats WHERE id = ?').get(chatId);
+      if (!chatExists) {
+        // Crea el chat con el nuevo título generado
+        db.prepare('INSERT INTO chats (id, user_id, title, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, userId, chatTitle);
+      } else {
+        // Si el chat ya existe, actualiza su título en la BD por si cambió de "Chat actual" al texto personalizado
+        db.prepare('UPDATE chats SET title = ? WHERE id = ?').run(chatTitle, chatId);
+      }
+      db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'user', userMessage);
+    } catch (e) { console.error('Error guardando mensaje:', e); }
   }
 
   if (isGreeting(userMessage)) {
-    return res.json({
-      response:
-        'Hola, soy el asistente de orientación profesional de la Universidad EAN. Puedo ayudarte a comprender cómo la inteligencia artificial impacta carreras como Administración de Empresas, Lenguas Modernas e Ingeniería de Sistemas, y qué habilidades puedes desarrollar para adaptarte.',
-    });
+    const response = 'Hola, soy el asistente de orientación profesional de la Universidad EAN. Puedo ayudarte a comprender cómo la inteligencia artificial impacta carreras como Administración de Empresas, Lenguas Modernas e Ingeniería de Sistemas.';
+    if (userId && chatId) db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'bot', response);
+    return res.json({ response });
   }
 
-const detectedCareer = findCareerByMessage(userMessage);
+  const detectedCareer = findCareerByMessage(userMessage);
+  if (detectedCareer) lastCareerContext = detectedCareer;
+  const normalizedMessage = normalizeText(userMessage);
+  const normalizedCareerName = detectedCareer ? normalizeText(detectedCareer.name) : '';
 
-if (detectedCareer) {
-  lastCareerContext = detectedCareer;
-}
+  if (detectedCareer && normalizedMessage === normalizedCareerName) {
+    const formattedContext = detectedCareer.context.replace(/^La carrera de .*? pertenece a la Facultad .*?\.\s*/i, '').trim();
+    const response = `Carrera: ${detectedCareer.name}\n\nFacultad: ${detectedCareer.faculty}\n\n${formattedContext}`;
+    if (userId && chatId) db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'bot', response);
+    return res.json({ response });
+  }
 
-const normalizedMessage = normalizeText(userMessage);
+  if (!detectedCareer && mentionsUnsupportedCareer(userMessage)) {
+    const response = `La carrera consultada no se encuentra disponible. Por ahora puedo orientarte sobre:\n\n- ${getAvailableCareers().split(', ').join('\n- ')}`;
+    if (userId && chatId) db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'bot', response);
+    return res.json({ response });
+  }
 
-const normalizedCareerName = detectedCareer
-  ? normalizeText(detectedCareer.name)
-  : '';
-
-if (detectedCareer && normalizedMessage === normalizedCareerName) {
-  const formattedContext = detectedCareer.context
-    .replace(/^La carrera de .*? pertenece a la Facultad .*?\.\s*/i, '')
-    .replace(/Impacto de la IA:/g, 'Impacto de la inteligencia artificial:')
-    .replace(/Herramientas clave:/g, 'Herramientas clave que debes dominar:')
-    .replace(/Habilidades estratégicas:/g, 'Habilidades estratégicas a fortalecer:')
-    .replace(/Nuevos roles laborales:/g, 'Nuevos roles laborales (salidas):')
-    .replace(/Enfoque eanista:/g, 'Tu ventaja Eanista:')
-    .trim();
-
-  return res.json({
-    response: `Carrera: ${detectedCareer.name}
-
-Facultad: ${detectedCareer.faculty}
-
-${formattedContext}
-
-¿Te gustaría saber cómo empezar a aprender alguna de estas herramientas o qué cursos específicos te pueden servir?`,
-  });
-}
-
-if (!detectedCareer && mentionsUnsupportedCareer(userMessage)) {
-  const availableCareers = getAvailableCareers();
-
-  return res.json({
-    response: `La carrera consultada no se encuentra disponible dentro de la base de carreras de la Universidad EAN para este asistente.
-
-Por ahora puedo orientarte sobre:
-
-- ${availableCareers.split(', ').join('\n- ')}`,
-  });
-}
-
-const career = detectedCareer || lastCareerContext;
-
-if (!career) {
-  const availableCareers = getAvailableCareers();
-
-  return res.json({
-    response: `Para poder orientarte mejor, dime sobre cuál de estas carreras quieres preguntar:
-
-- ${availableCareers.split(', ').join('\n- ')}
-
-Por ejemplo: "¿Cómo impacta la IA en Ingeniería de Sistemas?"`,
-  });
-}
+  const career = detectedCareer || lastCareerContext;
+  if (!career) {
+    const response = `Para poder orientarte mejor, dime sobre cuál de estas carreras quieres preguntar:\n\n- ${getAvailableCareers().split(', ').join('\n- ')}`;
+    if (userId && chatId) db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'bot', response);
+    return res.json({ response });
+  }
 
   const groqApiKey = process.env['GROQ_API_KEY'];
-
-  if (!groqApiKey) {
-    return res.status(500).json({
-      response: 'No se encontró la API key de Groq en el backend.',
-    });
-  }
-
-  const careerContext = `
-Facultad: ${career.faculty}
-Carrera: ${career.name}
-Contexto: ${career.context}
-`;
+  if (!groqApiKey) return res.status(500).json({ response: 'No se encontró la API key.' });
 
   try {
     const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${groqApiKey}`,
-        'Content-Type': 'application/json',
-      },
+      headers: { Authorization: `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'llama-3.1-8b-instant',
         messages: [
-          {
-            role: 'system',
-            content:
-              'Eres un asistente virtual de orientación profesional para estudiantes próximos a egresar de la Universidad EAN. Tu objetivo es ayudarles a comprender cómo la inteligencia artificial impacta su carrera y cómo pueden adaptarse profesionalmente. Responde de forma empática, académica, clara y motivadora. Usa únicamente el contexto de carrera entregado por la base de datos.',
-          },
-          {
-            role: 'user',
-            content: `
-Pregunta del estudiante:
-${userMessage}
-
-Carrera activa:
-${career.name}
-
-Contexto de la base de datos:
-${careerContext}
-
-Instrucciones de respuesta:
-- La pregunta del estudiante es lo principal. Responde directamente lo que preguntó.
-- Usa la carrera activa como contexto, pero no copies todo el contexto de la base de datos.
-- Si el estudiante pregunta por cursos, responde solo sobre cursos recomendados para la carrera activa.
-- Si pregunta por empleos, trabajos, áreas mejor pagadas o salidas laborales, responde solo sobre oportunidades laborales.
-- Si pregunta por habilidades, responde solo sobre habilidades.
-- Si pregunta por herramientas, responde solo sobre herramientas.
-- Si pregunta cómo adaptarse, responde solo con recomendaciones de adaptación.
-- Si el estudiante usa frases como "esta carrera", "mi carrera", "la carrera" o "este programa", entiende que habla de la carrera activa.
-- No vuelvas a escribir Carrera, Facultad, Impacto de la IA, Habilidades recomendadas ni Consejo final, excepto si el estudiante pide explícitamente una explicación general desde cero.
-- No empieces la respuesta repitiendo la pregunta del estudiante.
-- No uses la pregunta del estudiante como título.
-- Está prohibido usar Markdown o símbolos ** en cualquier parte de la respuesta.
-- Si necesitas un título, escríbelo sin formato, por ejemplo: Herramientas útiles:
-- Usa máximo 2 secciones con títulos naturales según la pregunta, por ejemplo: Cursos recomendados, Habilidades clave, Salidas laborales, Herramientas útiles o Recomendaciones.
-- Usa listas cortas con guiones si ayuda.
-- Mantén un tono claro, profesional y directo.
-`,
-          },
+          { role: 'system', content: 'Eres un asistente de orientación profesional de la EAN...' },
+          { role: 'user', content: `Pregunta: ${userMessage}\nCarrera: ${career.name}\nContexto: ${career.context}` }
         ],
         temperature: 0.3,
       }),
     });
 
     const data = (await groqResponse.json()) as any;
+    const finalResponse = data.choices?.[0]?.message?.content || 'No recibí respuesta.';
 
-    if (!groqResponse.ok) {
-      console.error('Groq API error:', data);
-
-      return res.status(500).json({
-        response: 'No pude conectarme correctamente con Groq.',
-      });
+    if (userId && chatId) {
+      db.prepare('INSERT INTO messages (chat_id, sender, content, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)').run(chatId, 'bot', finalResponse);
     }
-
-    return res.json({
-      response: data.choices?.[0]?.message?.content || 'No recibí una respuesta válida de Groq.',
-    });
+    return res.json({ response: finalResponse });
   } catch (error) {
-    console.error('Chat backend error:', error);
-
-    return res.status(500).json({
-      response: 'Ocurrió un error al generar la respuesta del asistente.',
-    });
+    return res.status(500).json({ response: 'Ocurrió un error al generar la respuesta.' });
   }
 });
 
-app.use(express.json());
+app.use(express.static(browserDistFolder, { maxAge: '1y', index: false, redirect: false }));
+app.use((req, res, next) => { angularApp.handle(req).then((response) => (response ? writeResponseToNodeResponse(response, res) : next())).catch(next); });
 
-app.post('/api/chat', async (req, res) => {
-  const { message } = req.body;
-  const apiKey = process.env['OPENAI_API_KEY'];
-
-  if (!apiKey) {
-    return res.status(500).json({ error: 'OpenAI API key not configured.' });
-  }
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          { role: 'system', content: 'Eres un asistente amigable y claro.' },
-          { role: 'user', content: message },
-        ],
-      }),
-    });
-
-    const data = await response.json();
-    return res.json(data);
-  } catch (error) {
-    return res.status(500).json({ error: 'OpenAI request failed.', details: error });
-  }
-});
-
-/**
- * Example Express Rest API endpoints can be defined here.
- * Uncomment and define endpoints as necessary.
- *
- * Example:
- * ```ts
- * app.get('/api/{*splat}', (req, res) => {
- *   // Handle API request
- * });
- * ```
- */
-
-/**
- * Serve static files from /browser
- */
-app.use(
-  express.static(browserDistFolder, {
-    maxAge: '1y',
-    index: false,
-    redirect: false,
-  }),
-);
-
-/**
- * Handle all other requests by rendering the Angular application.
- */
-app.use((req, res, next) => {
-  angularApp
-    .handle(req)
-    .then((response) =>
-      response ? writeResponseToNodeResponse(response, res) : next(),
-    )
-    .catch(next);
-});
-
-/**
- * Start the server if this module is the main entry point, or it is ran via PM2.
- * The server listens on the port defined by the `PORT` environment variable, or defaults to 4000.
- */
 if (isMainModule(import.meta.url) || process.env['pm_id']) {
   const port = process.env['PORT'] || 4000;
-  app.listen(port, (error) => {
-    if (error) {
-      throw error;
-    }
-
-    console.log(`Node Express server listening on http://localhost:${port}`);
-  });
+  app.listen(port, () => console.log(`Servidor en http://localhost:${port}`));
 }
 
-/**
- * Request handler used by the Angular CLI (for dev-server and during build) or Firebase Cloud Functions.
- */
 export const reqHandler = createNodeRequestHandler(app);

@@ -13,10 +13,15 @@ mkdirSync(dataDir, { recursive: true });
 
 const db = new Database(dbPath);
 
+// 1. ELIMINACIÓN Y CREACIÓN DE TABLAS
 db.exec(`
+  DROP TABLE IF EXISTS messages;
+  DROP TABLE IF EXISTS chats;
+  DROP TABLE IF EXISTS users;
   DROP TABLE IF EXISTS careers;
   DROP TABLE IF EXISTS faculties;
 
+  -- Tablas de conocimiento existentes
   CREATE TABLE faculties (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE
@@ -30,8 +35,35 @@ db.exec(`
     context TEXT NOT NULL,
     FOREIGN KEY (faculty_id) REFERENCES faculties(id)
   );
+
+  -- NUEVAS TABLAS PARA AUTENTICACIÓN E HISTORIAL --
+
+  CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    sender TEXT NOT NULL CHECK(sender IN ('user', 'bot')),
+    content TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+  );
 `);
 
+// 2. INSERCIÓN DE DATOS ESTÁTICOS (FACULTADES Y CARRERAS)
 const insertFaculty = db.prepare(`
   INSERT INTO faculties (name)
   VALUES (?)
@@ -60,6 +92,7 @@ for (const faculty of faculties) {
   facultyIds.set(faculty, result.lastInsertRowid);
 }
 
+// Información de las carreras
 const careers = [
   {
     faculty: 'Facultad de Administración, Finanzas y Ciencias Económicas',
@@ -67,8 +100,8 @@ const careers = [
     keywords:
       'administracion, administración, administracion de empresas, administración de empresas, empresas, gestion, gestión, negocios',
     context:
-      `La carrera de Administración de Empresas de la Universidad EAN pertenece a la Facultad de Administración, Finanzas y Ciencias Económicas. Esta carrera se relaciona con la gestión de organizaciones, liderazgo, innovación, toma de decisiones, análisis empresarial y desarrollo de estrategias. 
-      
+      `La carrera de Administración de Empresas de la Universidad EAN pertenece a la Facultad de Administración, Finanzas y Ciencias Económicas. Esta carrera se relaciona con la gestión de organizaciones, liderazgo, innovación, toma de decisiones, análisis empresarial y desarrollo de estrategias.
+
       Impacto de la IA:
         La inteligencia artificial transforma la administración operativa en administración estratégica. Elimina el trabajo manual y permite simular escenarios de negocios, predecir tendencias de mercado y personalizar la atención al cliente a gran escala.
 
@@ -94,7 +127,7 @@ const careers = [
 
       Enfoque eanista:
 
-        Esta carrera se centra en la innovación de modelos de negocio y el fomento del emprendimiento sostenible impulsado por el análisis de datos. El administrador eanista utiliza la inteligencia artificial no solo para automatizar procesos y optimizar la rentabilidad, sino para diseñar organizaciones ágiles, resilientes y con consciencia ambiental. 
+        Esta carrera se centra en la innovación de modelos de negocio y el fomento del emprendimiento sostenible impulsado por el análisis de datos. El administrador eanista utiliza la inteligencia artificial no solo para automatizar procesos y optimizar la rentabilidad, sino para diseñar organizaciones ágiles, resilientes y con consciencia ambiental.
         El objetivo es liderar la transformación digital en empresas tradicionales o fundar startups que integren principios de economía circular, utilizando las herramientas tecnológicas para competir a nivel global, tomar decisiones estratégicas éticas y potenciar el talento humano como el diferencial competitivo que las máquinas no pueden replicar.`,
   },
   {
@@ -104,7 +137,7 @@ const careers = [
       'lenguas modernas, lenguas, idiomas, traduccion, traducción, comunicacion intercultural, comunicación intercultural',
     context:
       `La carrera de Lenguas Modernas de la Universidad EAN pertenece a la Facultad de Humanidades y Ciencias Sociales. Esta carrera se relaciona con la comunicación intercultural, el dominio de idiomas, la traducción, la interpretación, la mediación cultural y la comunicación en contextos globales.
-        
+
       Impacto de la IA:
         La inteligencia artificial automatiza la traducción literal y la corrección gramatical. Obliga al profesional a evolucionar hacia la revisión experta, la adaptación de productos a mercados locales y el análisis computacional del lenguaje.
 
@@ -137,8 +170,8 @@ const careers = [
     keywords:
       'ingenieria de sistemas, ingeniería de sistemas, sistemas, software, programacion, programación, desarrollo de software, tecnologia, tecnología',
     context:
-      `La carrera de Ingeniería de Sistemas de la Universidad EAN pertenece a la Facultad de Ingeniería. Esta carrera se relaciona con el desarrollo de software, arquitectura de sistemas, bases de datos, análisis de información, automatización, ciberseguridad y transformación digital. 
-        
+      `La carrera de Ingeniería de Sistemas de la Universidad EAN pertenece a la Facultad de Ingeniería. Esta carrera se relaciona con el desarrollo de software, arquitectura de sistemas, bases de datos, análisis de información, automatización, ciberseguridad y transformación digital.
+
       Impacto de la IA:
         La IA actúa como un copiloto que acelera el desarrollo (escribiendo código base y detectando errores). El enfoque del ingeniero pasa de la codificación manual al diseño de arquitecturas escalables, integración de modelos de lenguaje (LLMs) y seguridad.
 
@@ -179,5 +212,6 @@ for (const career of careers) {
 console.log(`Base de datos creada correctamente en: ${dbPath}`);
 console.log(`Facultades insertadas: ${faculties.length}`);
 console.log(`Carreras insertadas: ${careers.length}`);
+console.log(`Tablas de usuarios, chats y mensajes listas para operar.`);
 
 db.close();
